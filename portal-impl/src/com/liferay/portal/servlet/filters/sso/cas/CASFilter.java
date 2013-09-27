@@ -26,7 +26,10 @@ import com.liferay.portal.util.PrefsPropsUtil;
 import com.liferay.portal.util.PropsValues;
 import com.liferay.portal.util.WebKeys;
 
+import java.io.PrintWriter;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -36,9 +39,13 @@ import javax.servlet.http.HttpServletResponse;
 import javax.servlet.http.HttpSession;
 
 import org.jasig.cas.client.authentication.AttributePrincipal;
+import org.jasig.cas.client.proxy.Cas20ProxyRetriever;
+import org.jasig.cas.client.proxy.ProxyGrantingTicketStorage;
+import org.jasig.cas.client.proxy.ProxyGrantingTicketStorageImpl;
 import org.jasig.cas.client.util.CommonUtils;
 import org.jasig.cas.client.validation.Assertion;
 import org.jasig.cas.client.validation.Cas20ProxyTicketValidator;
+import org.jasig.cas.client.validation.ProxyList;
 import org.jasig.cas.client.validation.TicketValidator;
 
 /**
@@ -95,6 +102,13 @@ public class CASFilter extends BasePortalFilter {
 			companyId, PropsKeys.CAS_SERVER_URL, PropsValues.CAS_SERVER_URL);
 		String loginUrl = PrefsPropsUtil.getString(
 			companyId, PropsKeys.CAS_LOGIN_URL, PropsValues.CAS_LOGIN_URL);
+        boolean acceptAnyProxy = PrefsPropsUtil.getBoolean(
+            companyId, PropsKeys.CAS_ACCEPT_ANY_PROXY, PropsValues.CAS_ACCEPT_ANY_PROXY);
+        String allowedProxyChains = PrefsPropsUtil.getString(
+            companyId, PropsKeys.CAS_ALLOWED_PROXY_CHAINS, PropsValues.CAS_ALLOWED_PROXY_CHAINS);
+        String proxyCallBackUrl = PrefsPropsUtil.getString(
+            companyId, PropsKeys.CAS_PROXY_CALLBACK_URL, PropsValues.CAS_PROXY_CALLBACK_URL);
+
 
 		Cas20ProxyTicketValidator cas20ProxyTicketValidator =
 			new Cas20ProxyTicketValidator(serverUrl);
@@ -107,13 +121,29 @@ public class CASFilter extends BasePortalFilter {
 		parameters.put("redirectAfterValidation", "false");
 
 		cas20ProxyTicketValidator.setCustomParameters(parameters);
+        cas20ProxyTicketValidator.setAcceptAnyProxy(acceptAnyProxy);
+        if(allowedProxyChains != null) {
+            cas20ProxyTicketValidator.setAllowedProxyChains(buildProxyList(allowedProxyChains));
+        }
+        cas20ProxyTicketValidator.setProxyCallbackUrl(proxyCallBackUrl);
+        cas20ProxyTicketValidator.setProxyRetriever(new Cas20ProxyRetriever(serverUrl));
+        cas20ProxyTicketValidator.setProxyGrantingTicketStorage(_proxyGrantingTicketStorage);
 
 		_ticketValidators.put(companyId, cas20ProxyTicketValidator);
 
 		return cas20ProxyTicketValidator;
 	}
 
-	@Override
+    private ProxyList buildProxyList(String allowedProxyChains) {
+        //a b , c d  => [[a,b],[c,d]]
+       final List<String[]> proxyChains = new ArrayList<String[]>();
+       for(String proxyChain : allowedProxyChains.split(",")){
+          proxyChains.add(proxyChain.split(" "));
+       }
+       return new ProxyList(proxyChains);
+    }
+
+    @Override
 	protected void processFilter(
 			HttpServletRequest request, HttpServletResponse response,
 			FilterChain filterChain)
@@ -167,6 +197,10 @@ public class CASFilter extends BasePortalFilter {
 				companyId, PropsKeys.CAS_SERVICE_URL,
 				PropsValues.CAS_SERVICE_URL);
 
+            String pgtCallback = PrefsPropsUtil.getString(
+                companyId, PropsKeys.CAS_PROXY_CALLBACK_URL,
+                PropsValues.CAS_PROXY_CALLBACK_URL);
+
 			if (Validator.isNull(serviceUrl)) {
 				serviceUrl = CommonUtils.constructServiceUrl(
 					request, response, serviceUrl, serverName, "ticket", false);
@@ -175,12 +209,27 @@ public class CASFilter extends BasePortalFilter {
 			String ticket = ParamUtil.getString(request, "ticket");
 
 			if (Validator.isNull(ticket)) {
-				String loginUrl = PrefsPropsUtil.getString(
-					companyId, PropsKeys.CAS_LOGIN_URL,
-					PropsValues.CAS_LOGIN_URL);
+                if (pgtCallback != null && pgtCallback.endsWith(request.getRequestURI())) {
+                   String pgtIou = ParamUtil.getString(request, "pgtIou");
+                   String pgtId = ParamUtil.getString(request, "pgtId");
 
+                   _proxyGrantingTicketStorage.save(pgtIou, pgtId);
+                   response.setStatus(200);
+                   PrintWriter out = response.getWriter();
+                   out.write("OK");
+                   return;
+                }
+                String loginUrl = PrefsPropsUtil.getString(
+                        companyId, PropsKeys.CAS_LOGIN_URL,
+                        PropsValues.CAS_LOGIN_URL);
+                String casProxyCallback = PrefsPropsUtil.getString(
+                        companyId, PropsKeys.CAS_PROXY_CALLBACK_URL,
+                        PropsValues.CAS_PROXY_CALLBACK_URL);
 				loginUrl = HttpUtil.addParameter(
 					loginUrl, "service", serviceUrl);
+
+                loginUrl = HttpUtil.addParameter(
+                    loginUrl, "pgtUrl", casProxyCallback);
 
 				response.sendRedirect(loginUrl);
 
@@ -198,6 +247,7 @@ public class CASFilter extends BasePortalFilter {
 				login = attributePrincipal.getName();
 
 				session.setAttribute(WebKeys.CAS_LOGIN, login);
+                session.setAttribute(WebKeys.CAS_PRINCIPAL, attributePrincipal);
 			}
 		}
 
@@ -209,4 +259,5 @@ public class CASFilter extends BasePortalFilter {
 	private static Map<Long, TicketValidator> _ticketValidators =
 		new ConcurrentHashMap<Long, TicketValidator>();
 
+    private static ProxyGrantingTicketStorage _proxyGrantingTicketStorage = new ProxyGrantingTicketStorageImpl(); //TODO this should be replaced by a database stored implementation
 }

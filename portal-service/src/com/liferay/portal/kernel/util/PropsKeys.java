@@ -347,6 +347,12 @@ public interface PropsKeys {
 
 	public static final String CAS_SERVICE_URL = "cas.service.url";
 
+    public static final String CAS_ACCEPT_ANY_PROXY = "cas.accept.any.proxy";
+
+    public static final String CAS_ALLOWED_PROXY_CHAINS = "cas.allowed.proxy.chains";
+
+    public static final String CAS_PROXY_CALLBACK_URL = "cas.proxy.callback.url";
+
 	public static final String CDN_DYNAMIC_RESOURCES_ENABLED = "cdn.dynamic.resources.enabled";
 
 	public static final String CDN_HOST_HTTP = "cdn.host.http";
